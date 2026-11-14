@@ -6,7 +6,8 @@
  *   1. Sends Jelly a FILTERED view of your recent daily notes (a week back, two weeks ahead), your project notes and
  *      any other notes you pick: their headings and checkboxes, plus only the front matter, lines and sections you
  *      chose. Your journal prose never leaves Obsidian. ("Jelly: show what is sent" shows it for the open note.)
- *   2. Applies what Jelly changed — a ticked task, a step added to a project, a value you edited in Jelly — to the
+ *   2. Applies what Jelly changed — a ticked task, a step added to a project, a value you edited in Jelly, a meal or dose
+ *      you logged in Jelly (daily notes, under your meals/meds headings; 0.3.4) — to the
  *      exact line in your real note, keeping everything else. If a change can't be placed exactly, it waits.
  * Works with Obsidian's Daily notes or the Periodic Notes plugin, any folder and date format, any list style.
  */
@@ -138,7 +139,8 @@ function apply(base, jelly, local, o) {
 }
 
 // ------------------------------------------------------------------ what Jelly may write (defence against a bad server)
-// Jelly only ever ticks a to-do, adds a "- [ ] step" to a project, sets a person's name/birthday/last contact and makes a
+// Jelly only ever ticks a to-do, adds a "- [ ] step" to a project, logs a meal or dose in a daily note (0.3.4: see
+// mealFill / noteLine below), sets a person's name/birthday/last contact and makes a
 // new project note (server/lib/vault.js). Anything else in a change is left out, so a hijacked or spoofed server can't
 // put templates, scripts or links into a vault (Templater runs <% %>, Dataview runs dataviewjs and `$=`; a remote image
 // ![](https://…) would tell a server when the note is opened).
@@ -151,6 +153,32 @@ const KV = /^([A-Za-z_][\w-]*):[ \t]*(.*)$/;
 const PERSON_KEYS = ['name', 'birthday', 'last_contact']; // vault.js setPersonField / fillPersonField
 const NEW_NOTE_KEYS = ['title', 'type', 'status', 'created', 'due']; // vault.js writeProject's front matter
 const HEADING = /^#{1,6}\s+(.*?)\s*#*\s*$/;
+// 0.3.4 (feedback #76): in a DAILY note Jelly may also log a meal or a dose you entered in Jelly — fill an empty
+// "Breakfast:" line, or add "Lunch: soup at 13:00" under a meals heading, or "- Took 1 vitamin D at 08:00" under a meds
+// heading. Plain words only: the usual unsafe() filter, no [[links]], at most 300 characters.
+const MEAL_KEY = /^(breakfast|lunch|dinner|snacks?|supper)$/i;
+const MEALS_HEADING = /^(meals?|food)$/i, MEDS_HEADING = /^(meds?|medications?|supplements?)$/i;
+const noteWords = l => l.length <= 300 && !unsafe(l) && !l.includes('[[');
+/** An empty "Breakfast:" line, now "Breakfast: eggs at 8:00" (daily notes; the line had nothing after the colon). */
+function mealFill(a, b, ctx) {
+  if (!ctx.daily) return false;
+  const x = KV.exec(a), y = KV.exec(b);
+  return !!(x && y && x[1] === y[1] && MEAL_KEY.test(x[1]) && !x[2].trim() && y[2].trim() && noteWords(b));
+}
+/** The heading of the section a line lands in (nearest above; "---" ends a section), lower-cased, or null. */
+function sectionOf(above) {
+  for (let i = above.length - 1; i >= 0; i--) { const h = HEADING.exec(above[i]); if (h) return h[1].toLowerCase(); if (/^---\s*$/.test(above[i])) return null; }
+  return null;
+}
+/** A meal or dose line Jelly may add to a daily note: under a meals or meds heading only. */
+function noteLine(line, above, ctx) {
+  if (!ctx.daily || !noteWords(line)) return false;
+  const sec = sectionOf(above); if (!sec) return false;
+  const kv = KV.exec(line);
+  if (MEALS_HEADING.test(sec)) return !!(kv && MEAL_KEY.test(kv[1]) && kv[2].trim());
+  if (MEDS_HEADING.test(sec)) return /^- (?!\[)\S/.test(line);
+  return false;
+}
 /** The same to-do, only ticked or unticked (the "✅ date" stamp may come or go); the person's own text is unchanged. */
 function tickPair(a, b) {
   const x = TASK_PARTS.exec(a), y = TASK_PARTS.exec(b);
@@ -166,6 +194,7 @@ function valuePair(a, b) {
 function insertable(line, above, ctx) {
   if (!line.trim() || /^## Tasks\s*$/.test(line)) return true;
   if (unsafe(line)) return false;
+  if (noteLine(line, above, ctx)) return true;
   const kv = KV.exec(line); if (kv && PERSON_KEYS.includes(kv[1])) return true;
   if (!/^- \[ \] \S/.test(line)) return false;
   let heading = null; // the section it lands in: nearest heading above ("---" ends a section, as in view())
@@ -184,15 +213,17 @@ function vet(base, jelly, ctx = {}) {
   for (let k = 0; k < ops.length;) {
     if (ops[k].type === 'eq') { out.push(ops[k++].a); continue; }
     const hunk = []; while (k < ops.length && ops[k].type !== 'eq') hunk.push(ops[k++]);
-    const paired = new Set(), used = new Set(); // del indexes with a matching ins; ins indexes taken
+    const pair = new Map(), used = new Set(); // del index -> the ins that changes it in place; ins indexes taken
     hunk.forEach((d, di) => {
       if (d.type !== 'del') return;
-      const ii = hunk.findIndex((x, xi) => x.type === 'ins' && !used.has(xi) && (tickPair(d.a, x.b) || valuePair(d.a, x.b)));
-      if (ii >= 0) { used.add(ii); paired.add(di); }
+      const ii = hunk.findIndex((x, xi) => x.type === 'ins' && !used.has(xi) && (tickPair(d.a, x.b) || valuePair(d.a, x.b) || mealFill(d.a, x.b, ctx)));
+      if (ii >= 0) { used.add(ii); pair.set(di, ii); }
     });
     hunk.forEach((x, xi) => {
-      if (x.type === 'del') { if (!paired.has(xi)) { out.push(x.a); dropped++; } return; }
-      if (used.has(xi) || insertable(x.b, out, ctx)) out.push(x.b); else dropped++;
+      // a changed line keeps its place: its new text goes where the old one was
+      if (x.type === 'del') { if (pair.has(xi)) out.push(hunk[pair.get(xi)].b); else { out.push(x.a); dropped++; } return; }
+      if (used.has(xi)) return;
+      if (insertable(x.b, out, ctx)) out.push(x.b); else dropped++;
     });
   }
   return { text: out.join('\n'), dropped };
@@ -294,7 +325,7 @@ class JellyPlugin extends Plugin {
     const s = this.settings;
     if (!s.server || !s.token) throw new Error('Set your Jelly address and token in the plugin settings.');
     const bad = addressProblem(s.server); if (bad) throw Object.assign(new Error(bad), { address: true }); // before the token goes anywhere
-    const r = await requestUrl({ url: s.server.replace(/\/$/, '') + '/api' + path, method, headers: { Authorization: `Bearer ${s.token}`, 'Content-Type': 'application/json', 'x-actor': 'obsidian', 'x-jelly-client': 'obsidian' }, body: body ? JSON.stringify(body) : undefined, throw: false });
+    const r = await requestUrl({ url: s.server.replace(/\/$/, '') + '/api' + path, method, headers: { Authorization: `Bearer ${s.token}`, 'Content-Type': 'application/json', 'x-actor': 'obsidian', 'x-jelly-client': 'obsidian', 'x-jelly-plugin': String((this.manifest && this.manifest.version) || '') }, body: body ? JSON.stringify(body) : undefined, throw: false });
     if (r.status >= 400) throw new Error((r.json && r.json.error) || `Jelly answered ${r.status}`);
     return r.json;
   }
@@ -348,7 +379,7 @@ class JellyPlugin extends Plugin {
         if (!p.endsWith('.md') || p.startsWith('/') || p.includes('\\') || p.split('/').some(seg => !seg || seg === '..' || seg.startsWith('.')) || !this.wantedEver(p) || typeof c.content !== 'string') continue;
         const f = this.app.vault.getAbstractFileByPath(p), local = f instanceof TFile ? await this.app.vault.read(f) : null;
         // only what Jelly does (ticks, new steps, person values; new notes only in the projects folder) — never a rewrite
-        const ctx = { project: p.startsWith(projects + '/'), todo: this.todoHeading() }, made = c.base === null || c.base === undefined;
+        const ctx = { project: p.startsWith(projects + '/'), daily: Object.values(daily).includes(p), todo: this.todoHeading() }, made = c.base === null || c.base === undefined;
         if (!made && local === null) continue; // gone here: it leaves Jelly with the next push, never re-made from Jelly's copy
         const vetted = made ? (local === null ? vetNew(c.content, ctx) : { text: c.content, dropped: 0 }) : vet(c.base, c.content, ctx); // made + already here: merge() waits
         refused += vetted.dropped;
@@ -422,4 +453,4 @@ module.exports = JellyPlugin;
 module.exports.merge = merge; // for tests (server/test/obsidian.test.js)
 module.exports.view = view;
 module.exports.apply = apply;
-Object.assign(module.exports, { vet, vetNew, unsafe, addressProblem, localHost }); // for tests (server/test/audit-ui-plugin.test.js)
+Object.assign(module.exports, { vet, vetNew, unsafe, addressProblem, localHost, mealFill, noteLine }); // for tests (server/test/audit-ui-plugin.test.js)
