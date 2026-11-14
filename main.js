@@ -15,12 +15,13 @@ const obsidian = require('obsidian');
 const { Plugin, PluginSettingTab, Setting, Notice, TFile, Modal, normalizePath, requestUrl } = obsidian;
 
 const DEFAULTS = {
-  server: '', token: '', sendDaily: true, sendProjects: true, leaveOut: '', dailyFolder: '', dailyFormat: '',
+  server: '', token: '', sendDaily: true, sendInsights: null, sendProjects: true, // sendInsights null = as the server says (on only where there's an Insights) leaveOut: '', dailyFolder: '', dailyFormat: '',
   projectsFolder: 'Projects', todoHeading: '', also: '',
   frontmatter: 'none', frontmatterKeys: '', linePrefixes: '', sections: '', every: 60,
 };
 const TASK = /^\s*(?:[-*+]|\d{1,3}[.)]) \[[ xX]\] /;
 const list = v => String(v || '').split(/[\n,]/).map(x => x.trim()).filter(Boolean);
+const SECRET = /token|secret|password|passwd|api[_-]?key|private[_-]?key|credential/i;
 
 // ------------------------------------------------------------------ what is sent: a filtered view of a note
 /**
@@ -36,9 +37,13 @@ function view(text, o = {}) {
   if (L[0] === '---') {
     const end = L.indexOf('---', 1);
     if (end > 0) {
-      if (o.frontmatter === 'all' || (o.frontmatter === 'keys' && keys.length)) {
+      if (o.frontmatter === 'all' || o.frontmatter === 'scalar' || (o.frontmatter === 'keys' && keys.length)) {
         keep(0);
-        for (let k = 1; k < end; k++) { const m = /^([^:#\s][^:]*):/.exec(L[k]); if (o.frontmatter === 'all' || (m && keys.includes(m[1].trim().toLowerCase()))) keep(k); }
+        for (let k = 1; k < end; k++) {
+          const m = /^([^:#\s][^:]*):(.*)$/.exec(L[k]), key = m ? m[1].trim().toLowerCase() : '', val = m ? m[2].trim() : '';
+          const scalar = m && !SECRET.test(key) && !/^[[{|>]/.test(val) && !(val === '' && /^\s+\S/.test(L[k + 1] || '')); // one-line values: no lists, maps or blocks; nothing that reads like a secret
+          if (o.frontmatter === 'all' || (o.frontmatter === 'scalar' && scalar) || (m && keys.includes(key))) keep(k);
+        }
         keep(end);
       }
       i = end + 1;
@@ -237,15 +242,36 @@ class JellyPlugin extends Plugin {
     this.app.workspace.onLayoutReady(() => this.sync(false));
   }
   async save() { this.settings.sent = this.sent; await this.saveData(this.settings); }
-  opts() { return this.settings; }
+  /**
+   * The filter for one note. Daily notes, when "For Insights" is on (the default), also send what Insights reads:
+   * their front matter (mood, energy, metrics) and the lines under a meds / meals heading, plus "Breakfast: …" and
+   * "Took …" lines (12 Nov: on the server, meds, meals and mood had stopped arriving). Never the diary prose.
+   */
+  opts(p) {
+    const s = this.settings;
+    if (!p || !this.insightsOn() || !this.isDaily(p)) return s;
+    const join = (a, b) => [...new Set([...list(a), ...list(b)])].join(', ');
+    return { ...s, frontmatter: s.frontmatter === 'all' ? 'all' : 'scalar', sections: join(s.sections, 'meds, med, medication, medications, medication log, meals, food'),
+      linePrefixes: join(s.linePrefixes, 'breakfast:, lunch:, dinner:, snacks:, snack:, took , - took , * took ') };
+  }
+  /** "For Insights": what you chose, else what the server says (on only for the account Insights is for). */
+  insightsOn() { return this.settings.sendInsights === true || (this.settings.sendInsights == null && this.serverInsights === true); }
+  async askServer() { try { const me = await this.call('GET', '/me'); this.serverInsights = !!(me && me.modules && me.modules.insights); } catch (_) { /* unknown: off */ } }
+  /**
+   * Jelly → Settings → Obsidian (0.3.2): whether to sync at all, which kinds of notes, and the folders when they were
+   * set there. Asked before each sync; an older Jelly without it leaves everything to this plugin's own settings.
+   */
+  async askConfig() { try { const c = await this.call('GET', '/obsidian/config'); this.jelly = c && typeof c === 'object' ? c : null; } catch (e) { if (/disconnected/i.test(e.message)) throw e; this.jelly = null; } }
+  isDaily(p) { const { folder, projects } = this.layout(); return !p.startsWith(projects + '/') && (folder ? p.startsWith(folder + '/') : Object.values(this.dailyMap()).includes(p)); }
 
   /** Daily notes: the Periodic Notes plugin if it's on, else Obsidian's Daily notes, unless overridden here. */
   layout() {
     const pn = this.app.plugins?.getPlugin?.('periodic-notes')?.settings?.daily;
     const dn = pn && pn.enabled !== false && (pn.folder !== undefined || pn.format) ? pn : (this.app.internalPlugins?.getPluginById?.('daily-notes')?.instance?.options || {});
-    const folder = (this.settings.dailyFolder || dn.folder || '').replace(/^\/+|\/+$/g, '');
-    const format = this.settings.dailyFormat || dn.format || 'YYYY-MM-DD';
-    return { folder, format, projects: (this.settings.projectsFolder || 'Projects').replace(/^\/+|\/+$/g, '') };
+    const j = this.jelly && this.jelly.layout; // set in Jelly: those folders win
+    const folder = (j ? j.daily_folder : this.settings.dailyFolder || dn.folder || '').replace(/^\/+|\/+$/g, '');
+    const format = (j && j.daily_pattern) || this.settings.dailyFormat || dn.format || 'YYYY-MM-DD';
+    return { folder, format, projects: ((j && j.projects_folder) || this.settings.projectsFolder || 'Projects').replace(/^\/+|\/+$/g, '') };
   }
   /** Each day of the window -> the path of its note (whether or not it exists yet), with your own date format. */
   dailyMap() {
@@ -255,17 +281,20 @@ class JellyPlugin extends Plugin {
   }
   leftOut(p) { return list(this.settings.leaveOut).map(x => x.replace(/^\/+|\/+$/g, '')).some(x => p === x || p === `${x}.md` || p.startsWith(`${x}/`)); }
   alsoSent(p) { return list(this.settings.also).map(x => x.replace(/^\/+|\/+$/g, '')).some(x => p === x || p === `${x}.md` || p.startsWith(`${x}/`)); }
+  sendsDaily() { return this.settings.sendDaily !== false && !(this.jelly && this.jelly.daily === false); }
+  sendsProjects() { return this.settings.sendProjects !== false && !(this.jelly && this.jelly.projects === false); }
+  todoHeading() { return this.jelly && this.jelly.layout ? this.jelly.layout.todo_heading || '' : this.settings.todoHeading || ''; }
   wanted(p) {
     if (!p.endsWith('.md') || this.leftOut(p)) return false;
     const { projects } = this.layout();
-    return (this.settings.sendProjects !== false && p.startsWith(projects + '/')) || (this.settings.sendDaily !== false && Object.values(this.dailyMap()).includes(p)) || this.alsoSent(p);
+    return (this.sendsProjects() && p.startsWith(projects + '/')) || (this.sendsDaily() && Object.values(this.dailyMap()).includes(p)) || this.alsoSent(p);
   }
 
   async call(method, path, body) {
     const s = this.settings;
     if (!s.server || !s.token) throw new Error('Set your Jelly address and token in the plugin settings.');
     const bad = addressProblem(s.server); if (bad) throw Object.assign(new Error(bad), { address: true }); // before the token goes anywhere
-    const r = await requestUrl({ url: s.server.replace(/\/$/, '') + '/api' + path, method, headers: { Authorization: `Bearer ${s.token}`, 'Content-Type': 'application/json', 'x-actor': 'obsidian' }, body: body ? JSON.stringify(body) : undefined, throw: false });
+    const r = await requestUrl({ url: s.server.replace(/\/$/, '') + '/api' + path, method, headers: { Authorization: `Bearer ${s.token}`, 'Content-Type': 'application/json', 'x-actor': 'obsidian', 'x-jelly-client': 'obsidian' }, body: body ? JSON.stringify(body) : undefined, throw: false });
     if (r.status >= 400) throw new Error((r.json && r.json.error) || `Jelly answered ${r.status}`);
     return r.json;
   }
@@ -273,7 +302,7 @@ class JellyPlugin extends Plugin {
   async showSent() {
     const f = this.app.workspace.getActiveFile();
     if (!f) return new Notice('Open a note first.');
-    const sent = this.wanted(f.path), v = view(await this.app.vault.cachedRead(f), this.opts()).lines.join('\n');
+    const sent = this.wanted(f.path), v = view(await this.app.vault.cachedRead(f), this.opts(f.path)).lines.join('\n');
     const m = new Modal(this.app);
     m.titleEl.setText(sent ? `Sent to Jelly: ${f.basename}` : `${f.basename} is not sent to Jelly`);
     if (sent) m.contentEl.createEl('pre', { text: v || '(nothing: no headings, checkboxes or chosen lines)' }).style.whiteSpace = 'pre-wrap';
@@ -284,19 +313,22 @@ class JellyPlugin extends Plugin {
   async sync(loud) {
     if (this.busy) return; this.busy = true;
     try {
-      const { folder, format, projects } = this.layout(), o = this.opts(), daily = this.dailyMap();
+      if (this.settings.sendInsights == null && this.serverInsights === undefined) await this.askServer();
+      await this.askConfig();
+      if (this.jelly && this.jelly.sync === false) throw new Error('Obsidian is disconnected in Jelly. To use it again: Jelly → Settings → Obsidian → Reconnect.');
+      const { folder, format, projects } = this.layout(), daily = this.dailyMap();
       const files = [], seen = new Set();
       const consider = async f => {
         if (!(f instanceof TFile) || !this.wanted(f.path)) return;
         seen.add(f.path);
-        const v = view(await this.app.vault.cachedRead(f), o).lines.join('\n'), h = hash(v);
+        const v = view(await this.app.vault.cachedRead(f), this.opts(f.path)).lines.join('\n'), h = hash(v);
         if (loud || this.sent[f.path] !== h) files.push({ path: f.path, content: v, h });
       };
       for (const p of Object.values(daily)) await consider(this.app.vault.getAbstractFileByPath(p));
       for (const f of this.app.vault.getMarkdownFiles()) if (f.path.startsWith(projects + '/') || this.alsoSent(f.path)) await consider(f);
       // sent before but gone or left out now: Jelly's copy drops them too (daily notes that just left the window stay)
       const deleted = Object.keys(this.sent).filter(p => !seen.has(p) && (!this.app.vault.getAbstractFileByPath(p) || !this.wantedEver(p)));
-      const layout = { daily_folder: folder, daily_pattern: format, projects_folder: projects, todo_heading: this.settings.todoHeading || '' };
+      const layout = { daily_folder: folder, daily_pattern: format, projects_folder: projects, todo_heading: this.todoHeading() };
       let changes;
       if (files.length || deleted.length) {
         let k = 0;
@@ -316,12 +348,12 @@ class JellyPlugin extends Plugin {
         if (!p.endsWith('.md') || p.startsWith('/') || p.includes('\\') || p.split('/').some(seg => !seg || seg === '..' || seg.startsWith('.')) || !this.wantedEver(p) || typeof c.content !== 'string') continue;
         const f = this.app.vault.getAbstractFileByPath(p), local = f instanceof TFile ? await this.app.vault.read(f) : null;
         // only what Jelly does (ticks, new steps, person values; new notes only in the projects folder) — never a rewrite
-        const ctx = { project: p.startsWith(projects + '/'), todo: this.settings.todoHeading || '' }, made = c.base === null || c.base === undefined;
+        const ctx = { project: p.startsWith(projects + '/'), todo: this.todoHeading() }, made = c.base === null || c.base === undefined;
         if (!made && local === null) continue; // gone here: it leaves Jelly with the next push, never re-made from Jelly's copy
         const vetted = made ? (local === null ? vetNew(c.content, ctx) : { text: c.content, dropped: 0 }) : vet(c.base, c.content, ctx); // made + already here: merge() waits
         refused += vetted.dropped;
         if (vetted.text === null) continue;
-        const merged = apply(c.base, vetted.text, local, o);
+        const o = this.opts(p), merged = apply(c.base, vetted.text, local, o);
         if (merged === null) { waiting++; continue; }
         if (merged !== local) {
           if (f instanceof TFile) await this.app.vault.modify(f, merged);
@@ -346,7 +378,7 @@ class JellyPlugin extends Plugin {
   wantedEver(p) {
     if (!p.endsWith('.md') || this.leftOut(p)) return false;
     const { folder, projects } = this.layout();
-    return (this.settings.sendProjects !== false && p.startsWith(projects + '/')) || (this.settings.sendDaily !== false && (!folder || p.startsWith(folder + '/'))) || this.alsoSent(p);
+    return (this.sendsProjects() && p.startsWith(projects + '/')) || (this.sendsDaily() && (!folder || p.startsWith(folder + '/'))) || this.alsoSent(p);
   }
 }
 function hash(s) { let h = 2166136261; for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 16777619); } return (h >>> 0).toString(36) + ':' + s.length; }
@@ -364,8 +396,10 @@ class JellySettings extends PluginSettingTab {
 
     el.createEl('h3', { text: 'Which notes' });
     new Setting(el).setName('Daily notes').setDesc('To-dos in your daily notes, a week back and two weeks ahead.').addToggle(t => t.setValue(s.sendDaily !== false).onChange(async v => { s.sendDaily = v; await save(); }));
+    new Setting(el).setName('For Insights: mood, meals and medicines').setDesc('Also sends your daily notes\u2019 front matter (one-line values like mood and energy \u2014 never anything named like a password, token or key), the lines under a \u201cmeds\u201d or \u201cmeals\u201d heading, and \u201cBreakfast: \u2026\u201d / \u201cTook \u2026\u201d lines, so Insights can show them. On by itself only if your Jelly has Insights. Never the rest of what you write.')
+      .addToggle(t => t.setValue(this.plugin.insightsOn()).onChange(async v => { s.sendInsights = v; this.plugin.sent = {}; await save(); }));
     const { folder, format } = this.plugin.layout();
-    new Setting(el).setName('Where your daily notes are').setDesc(`From Periodic Notes or Obsidian's Daily notes settings: ${folder || '(vault root)'} / ${format}. Fill these only to override.`)
+    new Setting(el).setName('Where your daily notes are').setDesc(this.plugin.jelly && this.plugin.jelly.layout ? `Set in Jelly (Settings → Obsidian): ${folder || '(vault root)'} / ${format}. Change them there.` : `From Periodic Notes or Obsidian's Daily notes settings: ${folder || '(vault root)'} / ${format}. Fill these only to override.`)
       .addText(t => t.setPlaceholder('folder').setValue(s.dailyFolder).onChange(async v => { s.dailyFolder = v.trim(); await save(); }))
       .addText(t => t.setPlaceholder('format, e.g. YYYY-MM-DD').setValue(s.dailyFormat).onChange(async v => { s.dailyFormat = v.trim(); await save(); }));
     text('To-dos under a heading', 'Only checkboxes under "## <this>" in a daily note count. Empty = every checkbox in the note.', 'todoHeading', 'e.g. to do');
