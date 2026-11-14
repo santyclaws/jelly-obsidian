@@ -392,7 +392,7 @@ class JellySettings extends PluginSettingTab {
     el.createEl('p', { text: 'Jelly gets the headings and checkboxes of the notes below, plus only what you choose here — never the rest of your writing. Command "Show what is sent to Jelly for this note" shows exactly what leaves Obsidian.' });
     const addr = new Setting(el).setName('Jelly address'), hint = () => addr.setDesc((s.server && addressProblem(s.server)) || 'e.g. https://jelly.example.com (plain http:// only for an address on your home network)');
     hint(); addr.addText(t => t.setValue(s.server).onChange(async v => { s.server = v.trim(); hint(); await save(); }));
-    new Setting(el).setName('Token').setDesc('Jelly ⚙ → Claude → Make a token (read and change).').addText(t => { t.inputEl.type = 'password'; t.setValue(s.token).onChange(async v => { s.token = v.trim(); await save(); }); });
+    new Setting(el).setName('Token').setDesc('Jelly → Settings → Obsidian → Make a token.').addText(t => { t.inputEl.type = 'password'; t.setValue(s.token).onChange(async v => { s.token = v.trim(); await save(); }); });
 
     el.createEl('h3', { text: 'Which notes' });
     new Setting(el).setName('Daily notes').setDesc('To-dos in your daily notes, a week back and two weeks ahead.').addToggle(t => t.setValue(s.sendDaily !== false).onChange(async v => { s.sendDaily = v; await save(); }));

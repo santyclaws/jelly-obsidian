@@ -36,7 +36,7 @@ Each lands on its exact line in the real note, and the rest of your writing isn'
 
 ## Install
 
-1. In Jelly, go to ⚙ → Claude → **Make a token** (choose "read and change").
+1. In Jelly, go to Settings → Obsidian → **Make a token**.
 2. In the vault, create the folder `.obsidian/plugins/jelly-sync/`.
 3. Put `manifest.json` and `main.js` in it. Jelly ⚙ → Obsidian has download links for both.
 4. In Obsidian, go to Settings → Community plugins and turn on **Jelly**.
@@ -54,6 +54,8 @@ Each lands on its exact line in the real note, and the rest of your writing isn'
 The plugin is also released to the public repo `santyclaws/jelly-obsidian`, so it installs from inside Obsidian with BRAT (from Obsidian's plugin list), with no GitHub token. After a change here, publish it there too: copy `main.js`, `manifest.json` and this README, bump `version` in `manifest.json`, commit there with `git -c user.email=santyclaws@users.noreply.github.com` (never a personal address: that repo is public), push, then `gh release create <version> main.js manifest.json --repo santyclaws/jelly-obsidian`. BRAT updates the devices.
 
 ## Version
+
+0.3.3 (2026-11-14): the token is made in Jelly → Settings → Obsidian (the wording pointed elsewhere).
 
 0.3.2 (2026-11-13): sends `x-jelly-client: obsidian` (so Disconnect ends only the plugin's token); follows Jelly → Settings → Obsidian (`GET /api/obsidian/config`): stops when Obsidian is disconnected there, leaves out daily notes or project notes switched off there, and uses the folders and to-do heading when they were set there. manifest.json had been committed empty in 0.3.1; it is whole again.
 
