@@ -140,7 +140,7 @@ function apply(base, jelly, local, o) {
 
 // ------------------------------------------------------------------ what Jelly may write (defence against a bad server)
 // Jelly only ever ticks a to-do, adds a "- [ ] step" to a project, logs a meal or dose in a daily note (0.3.4: see
-// mealFill / noteLine below), sets a person's name/birthday/last contact and makes a
+// mealFill / noteLine below), fills an empty mood: / energy: line with 1–10 (0.3.5: frontFill), sets a person's name/birthday/last contact and makes a
 // new project note (server/lib/vault.js). Anything else in a change is left out, so a hijacked or spoofed server can't
 // put templates, scripts or links into a vault (Templater runs <% %>, Dataview runs dataviewjs and `$=`; a remote image
 // ![](https://…) would tell a server when the note is opened).
@@ -164,6 +164,14 @@ function mealFill(a, b, ctx) {
   if (!ctx.daily) return false;
   const x = KV.exec(a), y = KV.exec(b);
   return !!(x && y && x[1] === y[1] && MEAL_KEY.test(x[1]) && !x[2].trim() && y[2].trim() && noteWords(b));
+}
+/** 0.3.5 (feedback #177): mood or energy logged in Jelly — an EMPTY "mood:" / "energy:" line in a daily note filled
+ *  with a number from 1 to 10 (one decimal at most). Never a line that already has a value, never another key. */
+const FRONT_KEY = /^(mood|energy)$/i, ONE_TO_TEN = /^(?:10|[1-9])(?:\.\d)?$/;
+function frontFill(a, b, ctx) {
+  if (!ctx.daily) return false;
+  const x = KV.exec(a), y = KV.exec(b);
+  return !!(x && y && x[1] === y[1] && FRONT_KEY.test(x[1]) && !x[2].trim() && ONE_TO_TEN.test(y[2].trim()) && !unsafe(b));
 }
 /** The heading of the section a line lands in (nearest above; "---" ends a section), lower-cased, or null. */
 function sectionOf(above) {
@@ -216,7 +224,7 @@ function vet(base, jelly, ctx = {}) {
     const pair = new Map(), used = new Set(); // del index -> the ins that changes it in place; ins indexes taken
     hunk.forEach((d, di) => {
       if (d.type !== 'del') return;
-      const ii = hunk.findIndex((x, xi) => x.type === 'ins' && !used.has(xi) && (tickPair(d.a, x.b) || valuePair(d.a, x.b) || mealFill(d.a, x.b, ctx)));
+      const ii = hunk.findIndex((x, xi) => x.type === 'ins' && !used.has(xi) && (tickPair(d.a, x.b) || valuePair(d.a, x.b) || mealFill(d.a, x.b, ctx) || frontFill(d.a, x.b, ctx)));
       if (ii >= 0) { used.add(ii); pair.set(di, ii); }
     });
     hunk.forEach((x, xi) => {
@@ -453,4 +461,4 @@ module.exports = JellyPlugin;
 module.exports.merge = merge; // for tests (server/test/obsidian.test.js)
 module.exports.view = view;
 module.exports.apply = apply;
-Object.assign(module.exports, { vet, vetNew, unsafe, addressProblem, localHost, mealFill, noteLine }); // for tests (server/test/audit-ui-plugin.test.js)
+Object.assign(module.exports, { vet, vetNew, unsafe, addressProblem, localHost, mealFill, noteLine, frontFill }); // for tests (server/test/audit-ui-plugin.test.js)

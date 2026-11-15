@@ -56,6 +56,8 @@ The plugin is also released to the public repo `santyclaws/jelly-obsidian`, so i
 
 ## Version
 
+0.3.5 (2026-11-15): mood and energy you log in Jelly fill an empty `mood:` / `energy:` line in that day's daily note (a number from 1 to 10; never a line that already has a value). Jelly → Insights → Options can switch writing to the note off.
+
 0.3.4 (2026-11-14): meals and doses you log in Jelly reach your daily note (see What comes back); sends its version (`x-jelly-plugin`), so Jelly writes those lines only for 0.3.4 and later. A line Jelly changes in place (a tick, a filled meal line) keeps its place when other lines around it change.
 
 0.3.3 (2026-11-14): the token is made in Jelly → Settings → Obsidian (the wording pointed elsewhere).
