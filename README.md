@@ -1,6 +1,6 @@
 # Jelly for Obsidian
 
-This plugin connects a person's Obsidian vault to their own Jelly. It is for people whose vault is not on the Jelly server, which means everyone except the owner (the owner's vault is read directly).
+This plugin connects a person's Obsidian vault to their own Jelly. 
 
 **What leaves your Obsidian is a filtered view, never whole notes:**
 
@@ -28,7 +28,6 @@ Each lands on its exact line in the real note, and the rest of your writing isn'
 
 **Never written into your vault**, whatever the server says: code blocks (```` ``` ````, `~~~`), Templater (`<% %>`), `dataviewjs` or inline `$=` queries, HTML tags, `obsidian://` or `javascript:` links. So even a hijacked or spoofed server can't add something that runs in your Obsidian.
 
-**The address must be `https://`.** Plain `http://` only works for an address on your home network (`192.168.x.x`, `10.x`, `172.16–31.x`, `100.64–127.x` (Tailscale), `localhost`, `*.local`): on the internet it would show your token and notes to anyone in between.
 
 **Your own setup works:**
 - **Daily notes:** Obsidian's Daily notes or the **Periodic Notes** plugin, with any folder and any date format. The plugin tells Jelly where each day's note is.
@@ -52,7 +51,7 @@ Each lands on its exact line in the real note, and the rest of your writing isn'
 
 ## Phones and tablets without a file manager (BRAT)
 
-The plugin is also released to the public repo `santyclaws/jelly-obsidian`, so it installs from inside Obsidian with BRAT (from Obsidian's plugin list), with no GitHub token. After a change here, publish it there too: copy `main.js`, `manifest.json` and this README, bump `version` in `manifest.json`, commit there with `git -c user.email=santyclaws@users.noreply.github.com` (never a personal address: that repo is public), push, then `gh release create <version> main.js manifest.json --repo santyclaws/jelly-obsidian`. BRAT updates the devices.
+The plugin is also released to the public repo `santyclaws/jelly-obsidian`, so it installs from inside Obsidian with BRAT (from Obsidian's plugin list), with no GitHub token. After a change here, publish it there too: copy `main.js`, `manifest.json` and this README, bump `version` in `manifest.json`, commit, push, then `gh release create <version> main.js manifest.json --repo santyclaws/jelly-obsidian`. BRAT updates the devices.
 
 ## Version
 
